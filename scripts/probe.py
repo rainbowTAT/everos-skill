@@ -1,12 +1,32 @@
-"""Probe EverOS services health status."""
+"""Probe EverOS services health status.
+
+Supports auto-detection of Cloud/Local mode.
+"""
 
 import argparse
 import json
+import os
 import sys
 import urllib.request
 import urllib.error
 
 from config import HEALTH_URL, API_BASE_URL, IS_CLOUD
+
+
+def detect_mode():
+    """Detect which mode is available."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    has_local = os.path.exists(os.path.join(script_dir, "..", "EverOS", "methods", "EverCore"))
+    has_cloud = IS_CLOUD
+
+    if has_cloud and has_local:
+        return "both"
+    elif has_cloud:
+        return "cloud"
+    elif has_local:
+        return "local"
+    else:
+        return "none"
 
 
 def check_health():
@@ -73,11 +93,39 @@ def main():
     parser = argparse.ArgumentParser(description="Probe EverOS services")
     parser.add_argument("--cloud", action="store_true", help="Check cloud API only (skip Docker)")
     parser.add_argument("--check-docker", action="store_true", help="Check Docker containers")
+    parser.add_argument("--auto", action="store_true", help="Auto-detect mode and check all")
     args = parser.parse_args()
 
-    cloud_mode = args.cloud or IS_CLOUD
+    # Auto-detect mode
+    mode = detect_mode()
 
     print("=== EverOS Service Probe ===\n")
+
+    if args.auto:
+        # Auto mode: check everything available
+        if mode == "none":
+            print("未检测到任何配置。")
+            print("  本地模式：请确保 EverOS 已安装")
+            print("  云端模式：请设置 EVEROS_API_KEY 环境变量")
+            sys.exit(1)
+
+        if IS_CLOUD:
+            print(f"Mode: Cloud ({API_BASE_URL})")
+            api_ok = check_health()
+            print()
+            sys.exit(0 if api_ok else 1)
+
+        # Local mode
+        print(f"Mode: Local ({API_BASE_URL})")
+        docker_ok = check_docker()
+        print()
+        api_ok = check_health()
+        print()
+        sys.exit(0 if (docker_ok and api_ok) else 1)
+
+    # Manual mode
+    cloud_mode = args.cloud or IS_CLOUD
+
     if cloud_mode:
         print(f"Mode: Cloud ({API_BASE_URL})\n")
     else:

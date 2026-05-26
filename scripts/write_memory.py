@@ -1,11 +1,10 @@
 """Write conversation memory to EverOS.
 
+Supports auto-detection of Cloud/Local mode.
+
 Usage:
-    python write_memory.py \
-        --user-id "claude_code_user" \
-        --session-id "session_001" \
-        --messages '[{"role":"user","content":"hello"},{"role":"assistant","content":"hi!"}]' \
-        --flush
+    python write_memory.py --messages '[{"role":"user","content":"hello"}]' --flush
+    python write_memory.py --messages-file conversation.json --flush
 """
 
 import argparse
@@ -68,17 +67,35 @@ def main():
     parser.add_argument("--user-id", default=DEFAULT_USER_ID, help="User ID")
     parser.add_argument("--session-id", default=None, help="Session ID")
     parser.add_argument(
-        "--messages", required=True,
+        "--messages",
         help='JSON array of messages: [{"role":"user","content":"..."},...]',
+    )
+    parser.add_argument(
+        "--messages-file",
+        help="Path to JSON file containing messages",
     )
     parser.add_argument("--flush", action="store_true", help="Flush after writing")
     parser.add_argument("--wait", action="store_true", help="Wait for flush to complete (slow)")
     args = parser.parse_args()
 
+    # Read messages from argument or file
+    if args.messages:
+        raw_messages_str = args.messages
+    elif args.messages_file:
+        try:
+            with open(args.messages_file, "r", encoding="utf-8") as f:
+                raw_messages_str = f.read()
+        except FileNotFoundError:
+            print(f"Error: file not found: {args.messages_file}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("Error: specify --messages or --messages-file", file=sys.stderr)
+        sys.exit(1)
+
     try:
-        raw = json.loads(args.messages)
+        raw = json.loads(raw_messages_str)
     except json.JSONDecodeError as e:
-        print(f"Error: invalid JSON in --messages: {e}", file=sys.stderr)
+        print(f"Error: invalid JSON: {e}", file=sys.stderr)
         sys.exit(1)
 
     messages = build_messages(raw)
@@ -91,7 +108,12 @@ def main():
         payload["session_id"] = args.session_id
 
     # Add messages
-    result = post_json(AGENT_ADD_URL, payload)
+    try:
+        result = post_json(AGENT_ADD_URL, payload)
+    except urllib.error.URLError as e:
+        print(f"Error: failed to save: {e}", file=sys.stderr)
+        sys.exit(1)
+
     data = result.get("data", {})
     print(f"Add: {data.get('message_count', 0)} messages, status={data.get('status', 'unknown')}")
 

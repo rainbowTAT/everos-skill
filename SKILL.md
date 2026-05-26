@@ -4,7 +4,7 @@ description: EverOS 长期记忆系统 — 保存和搜索对话记忆，支持 
 
 # EverOS 记忆系统 Skill
 
-让 Claude Code 拥有基于 EverOS 的长期记忆能力。通过手动命令保存和搜索对话记忆。
+让 Claude Code 拥有基于 EverOS 的长期记忆能力。
 
 ## 何时使用
 
@@ -14,151 +14,131 @@ description: EverOS 长期记忆系统 — 保存和搜索对话记忆，支持 
 - 用户要求保存当前对话到记忆
 - 用户要求搜索历史记忆
 
-## 部署方式选择
+## 首次安装引导
 
-使用前先确定部署方式：
+当用户首次使用时，按以下步骤引导。每一步先向用户说明在做什么，再执行命令。
 
-| 方式 | 说明 | 适用场景 |
-|------|------|----------|
-| **Cloud** | 使用 EverMind 官方云服务 | 快速体验，无需 Docker |
-| **Local** | 本地 Docker 部署 | 数据隐私要求高，离线使用 |
+### 1. 安装 Skill 到 Claude Code
 
-### Cloud 模式（推荐新手）
+告知用户正在将 EverOS 记忆系统注册到 Claude Code，然后执行：
 
-只需设置两个环境变量，无需安装 Docker：
+```bash
+cd everos-skill && python -X utf8 scripts/everos.py install
+```
+
+脚本会提示选择全局或项目级安装。引导用户选择后，告知需要重启 Claude Code 才能生效。
+
+### 2. 选择部署方式
+
+向用户说明两种模式的区别，让用户选择：
+
+```
+请选择部署方式：
+  [1] Cloud（云端）— 注册即用，无需 Docker，数据存云端
+  [2] Local（本地）— 需要 Docker，数据完全在本地，更隐私
+```
+
+### 3a. Cloud 模式配置
+
+引导用户完成以下操作：
+
+1. 打开 [evermind.ai](https://evermind.ai) 注册账号
+2. 获取 API Key
+3. 执行以下命令设置环境变量（把 `your_api_key` 替换为实际的 key）：
 
 ```bash
 export EVEROS_API_URL="https://api.evermind.ai"
 export EVEROS_API_KEY="your_api_key"
 ```
 
-获取 API Key：访问 [evermind.ai](https://evermind.ai) 注册账号。
+### 3b. Local 模式安装
 
-### Local 模式
-
-运行一键安装脚本（脚本位于本 skill 的 `scripts/` 目录下）：
+告知用户正在自动安装本地环境（需要 Docker Desktop，约 5-10 分钟），然后执行：
 
 ```bash
-python scripts/auto_setup.py
+cd everos-skill && python -X utf8 scripts/auto_setup.py
 ```
 
-脚本自动完成：
-1. 检测 Docker、uv、Git（uv 未装会自动安装）
-2. 克隆 EverOS 源码
-3. 启动 Docker Compose 数据库（MongoDB + ES + Milvus + Redis）
-4. 交互式配置 .env（LLM Key、Embedding Key）
-5. 安装 EverCore Python 依赖
-6. 启动 EverCore API
-7. 验证所有服务连通
+安装过程中会自动：检测依赖 → 克隆源码 → 启动数据库 → 配置环境 → 安装依赖 → 启动 API。
 
-## 手动安装（Local 模式）
+如果脚本提示输入 LLM API Key，引导用户提供（用于记忆提取功能）。
 
-如果一键安装失败，按以下步骤手动操作：
-
-### 第一步：启动数据库
+### 4. 验证安装
 
 ```bash
-cd EverOS/methods/EverCore
-docker compose up -d
+cd everos-skill && python -X utf8 scripts/everos.py status
 ```
 
-### 第二步：配置 .env
-
-```bash
-cp env.template .env
-# 编辑 .env，填入：
-# - LLM_API_KEY / OPENROUTER_API_KEY（用于记忆提取）
-# - VECTORIZE_API_KEY（用于向量检索，推荐 DeepInfra）
-```
-
-### 第三步：启动 EverCore
-
-```bash
-uv sync
-uv run python src/run.py
-```
+显示各组件"正常"即安装成功。如有异常，参考下方错误处理表排查。
 
 ## 日常使用
 
-### 保存对话记忆
+以下命令直接执行，无需额外解释。所有命令均在 `everos-skill` 目录下运行。
 
-当你想把当前对话保存到 EverOS 时，使用 writer 模块：
+### 启动环境
 
 ```bash
-python scripts/write_memory.py \
-  --user-id "claude_code_user" \
-  --session-id "当前会话ID" \
-  --messages '[{"role":"user","content":"用户的问题"},{"role":"assistant","content":"Claude的回答"}]' \
-  --flush
+cd everos-skill && python -X utf8 scripts/everos.py start
 ```
 
-`--flush` 会触发 EverOS 从对话中自动提取结构化记忆（事实、偏好、事件等）。
+自动检测 Cloud/Local 模式。Local 模式下会自动启动 Docker Desktop（如未运行）。
+
+### 保存当前对话
+
+将当前对话内容序列化为 JSON 后执行。格式：`[{"role":"user","content":"..."},{"role":"assistant","content":"..."}]`
+
+```bash
+cd everos-skill && python -X utf8 scripts/everos.py save --messages '[对话JSON]' --flush
+```
+
+`--flush` 触发记忆提取，必须带上。
 
 ### 搜索记忆
 
-在回答用户问题前，先搜索相关历史记忆：
-
 ```bash
-python scripts/search_memory.py \
-  --query "搜索关键词" \
-  --method hybrid \
-  --top-k 5
+cd everos-skill && python -X utf8 scripts/everos.py search "关键词"
 ```
 
-检索方式：
-- `keyword` — 关键词匹配（BM25）
-- `vector` — 向量语义搜索
-- `hybrid` — 混合搜索
-- `agentic` — LLM 引导搜索
+可选参数：`--method vector|keyword|hybrid|agentic`，`--top-k 数量`
 
-### 探测服务状态
+### 检查状态
 
 ```bash
-# 自动检测 Cloud/Local 模式
-python scripts/probe.py
-
-# 强制检查 Docker（仅 Local 模式）
-python scripts/probe.py --check-docker
+cd everos-skill && python -X utf8 scripts/everos.py status
 ```
+
+### 一键测试
+
+```bash
+cd everos-skill && python -X utf8 scripts/everos.py test
+```
+
+自动测试：Docker → 容器 → API → 保存 → 搜索，输出通过/失败结果。
+
+## 自动判断模式
+
+| 用户配置 | 行为 |
+|----------|------|
+| 只有 Cloud 环境变量 | 自动用云端 |
+| 只有本地 EverOS 安装 | 自动用本地 |
+| 都有 | 提示用户选择 |
 
 ## 记忆类型
 
-EverOS 会从对话中自动提取以下类型的记忆：
-
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| episodic_memory | 具体事件 | "用户在5月23日讨论了实习项目" |
-| profile | 用户偏好/属性 | "用户是双非学历，目标进研究型公司" |
-| foresight | 预测/计划 | "用户计划下周完成SQLite迁移" |
-| atomic_fact | 原子事实 | "EverOS使用MongoDB存储记忆文档" |
-| agent_case | 案例 | "解决Docker内存不足的方法" |
-| agent_skill | 技能 | "如何配置DeepInfra embedding" |
-
-## 验证安装
-
-### 检查服务
-
-```bash
-python scripts/probe.py
-```
-
-### 验证写入
-
-保存几条记忆后搜索验证：
-
-```bash
-python scripts/search_memory.py \
-  --query "刚才聊的内容" \
-  --method keyword
-```
-
-有返回结果就说明写入成功。
+| 类型 | 说明 |
+|------|------|
+| episodic_memory | 对话中的具体事件 |
+| profile | 用户偏好/属性 |
+| foresight | 计划/预测 |
+| atomic_fact | 原子事实 |
+| agent_case | 解决方案案例 |
+| agent_skill | 技能/方法 |
 
 ## 错误处理
 
 | 错误 | 原因 | 解决 |
 |------|------|------|
-| Connection refused | 服务未运行 | 运行 `probe.py` 检查，启动缺失服务 |
+| Connection refused | 服务未运行 | `cd everos-skill && python -X utf8 scripts/everos.py status` 检查 |
 | 401 Unauthorized | API Key 无效 | 检查 `EVEROS_API_KEY` 环境变量 |
-| 记忆为空 | API Key 未配置 | Cloud: 检查环境变量；Local: 检查 `.env` 中的 LLM/Embedding Key |
 | Docker 启动失败 | 内存不足 | 至少需要 4GB 空闲内存 |
+| 未检测到配置 | 未安装 | 引导用户重新执行安装流程 |
