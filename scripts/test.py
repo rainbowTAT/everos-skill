@@ -21,7 +21,7 @@ import urllib.error
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from config import API_BASE_URL, HEALTH_URL, AGENT_ADD_URL, AGENT_FLUSH_URL, SEARCH_URL, DEFAULT_USER_ID, HEADERS
+from config import API_KEY, API_BASE_URL, HEALTH_URL, AGENT_ADD_URL, AGENT_FLUSH_URL, SEARCH_URL, DEFAULT_USER_ID, HEADERS
 
 PASS = "[PASS]"
 FAIL = "[FAIL]"
@@ -193,13 +193,21 @@ def main():
     print("  EverOS 一键测试")
     print("=" * 40)
 
-    docker_ok = test_docker()
-    if docker_ok:
-        containers_ok = test_containers()
+    cloud_mode = bool(API_KEY)
+    if cloud_mode:
+        print(f"\n[Cloud] 使用云端 API: {API_BASE_URL}")
+        report(SKIP, "Docker 检查（Cloud 模式不需要）")
+        report(SKIP, "容器检查（Cloud 模式不需要）")
+        docker_ok = True
+        containers_ok = True
     else:
-        print()
-        report(SKIP, "容器检查（Docker 未运行）")
-        containers_ok = False
+        docker_ok = test_docker()
+        if docker_ok:
+            containers_ok = test_containers()
+        else:
+            print()
+            report(SKIP, "容器检查（Docker 未运行）")
+            containers_ok = False
 
     api_ok = test_api()
 

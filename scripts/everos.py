@@ -11,6 +11,7 @@ Usage:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,10 +28,24 @@ from config import (
     DEFAULT_USER_ID, HEADERS,
 )
 
+SKILL_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+
+
+def find_evercore_dir():
+    """Find EverCore in common layouts."""
+    candidates = [
+        os.path.join(SKILL_DIR, "EverOS", "methods", "EverCore"),
+        os.path.join(os.path.dirname(SKILL_DIR), "EverOS", "methods", "EverCore"),
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return os.path.abspath(path)
+    return None
+
 
 def detect_mode():
     """Detect which mode to use based on config."""
-    has_local = os.path.exists(os.path.join(SCRIPT_DIR, "..", "EverOS", "methods", "EverCore"))
+    has_local = find_evercore_dir() is not None
     has_cloud = bool(API_KEY)
 
     if has_cloud and has_local:
@@ -71,6 +86,52 @@ def get_mode():
         print("  本地模式：请确保 EverOS 已安装")
         print("  云端模式：请设置 EVEROS_API_KEY 环境变量")
         sys.exit(1)
+
+
+def check_health(timeout=5):
+    """Return (ok, detail) for the configured EverOS API."""
+    try:
+        req = urllib.request.Request(HEALTH_URL, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP {e.code}: {e.reason}"
+    except urllib.error.URLError as e:
+        return False, str(e.reason)
+    except OSError as e:
+        return False, str(e)
+
+
+def print_next_steps():
+    """Print beginner-friendly next steps."""
+    print("\n常用命令：")
+    print("  诊断问题: python -X utf8 scripts/everos.py doctor")
+    print("  检查状态: python -X utf8 scripts/everos.py status")
+    print("  启动本地 EverOS: python -X utf8 scripts/everos.py start")
+    print('  搜索记忆: python -X utf8 scripts/everos.py search "关键词" --method hybrid')
+
+
+def count_claude_hooks(settings_path):
+    if not os.path.exists(settings_path):
+        return 0
+    try:
+        with open(settings_path, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return 0
+    hooks = settings.get("hooks", {})
+    count = 0
+    if not isinstance(hooks, dict):
+        return 0
+    for blocks in hooks.values():
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            for hook in block.get("hooks", []) if isinstance(block, dict) else []:
+                command = hook.get("command", "").replace("\\", "/") if isinstance(hook, dict) else ""
+                if "/integrations/claude-code/inject_memory.py" in command or "/integrations/claude-code/store_memory.py" in command:
+                    count += 1
+    return count
 
 
 # === start command ===
@@ -124,13 +185,16 @@ def cmd_start(args):
     if mode == "cloud":
         print("云端模式无需启动本地服务。")
         print(f"API 地址: {API_BASE_URL}")
+        ok, detail = check_health()
+        print(f"状态: {'正常' if ok else '失败'}")
+        if not ok:
+            print(f"原因: {detail}")
         return
 
     # Local mode - start Docker and API
-    repo_dir = os.path.join(SCRIPT_DIR, "..", "EverOS")
-    evercore_dir = os.path.join(repo_dir, "methods", "EverCore")
+    evercore_dir = find_evercore_dir()
 
-    if not os.path.isdir(evercore_dir):
+    if not evercore_dir:
         print("错误：EverOS 未安装。运行 auto_setup.py 先安装。")
         sys.exit(1)
 
@@ -148,8 +212,8 @@ def cmd_start(args):
     proc = subprocess.Popen(
         ["uv", "run", "python", "src/run.py"],
         cwd=evercore_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     print(f"EverCore API 启动中 (PID {proc.pid})")
 
@@ -157,14 +221,34 @@ def cmd_start(args):
     print("等待服务就绪...")
     for i in range(15):
         try:
-            req = urllib.request.Request(HEALTH_URL, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                print(f"服务就绪: {resp.read().decode()}")
+            ok, detail = check_health(timeout=3)
+            if ok:
+                print(f"服务就绪: {detail}")
+                print_next_steps()
                 return
-        except (urllib.error.URLError, OSError):
+            time.sleep(2)
+        except OSError:
             time.sleep(2)
 
     print("警告：API 可能还在启动中，请稍后检查状态。")
+    print_next_steps()
+
+
+def cmd_stop(args):
+    """Stop local EverOS databases."""
+    evercore_dir = find_evercore_dir()
+    if not evercore_dir:
+        print("未找到本地 EverOS，无需停止。")
+        return
+    try:
+        subprocess.run(["docker", "compose", "down"], cwd=evercore_dir, check=True)
+        print("本地 EverOS 数据库已停止。")
+    except FileNotFoundError:
+        print("错误：未找到 docker 命令。")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"错误：停止失败: {e}")
+        sys.exit(e.returncode)
 
 
 # === save command ===
@@ -309,17 +393,16 @@ def cmd_status(args):
     # Check cloud if configured
     if API_KEY:
         print(f"云端模式: {API_BASE_URL}")
-        try:
-            req = urllib.request.Request(HEALTH_URL, method="GET")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                print(f"  状态: 正常")
-        except urllib.error.URLError as e:
-            print(f"  状态: 失败 - {e}")
+        ok, detail = check_health()
+        print(f"  状态: {'正常' if ok else '失败'}")
+        if not ok:
+            print(f"  原因: {detail}")
 
     # Check local if configured
-    repo_dir = os.path.join(SCRIPT_DIR, "..", "EverOS")
-    if os.path.isdir(os.path.join(repo_dir, "methods", "EverCore")):
+    evercore_dir = find_evercore_dir()
+    if evercore_dir:
         print(f"\n本地模式: {API_BASE_URL}")
+        print(f"  EverCore 路径: {evercore_dir}")
 
         # Check Docker
         try:
@@ -344,17 +427,15 @@ def cmd_status(args):
                     tag = "正常" if healthy else "异常"
                     print(f"  {name}: {tag}")
             else:
-                print("  Docker: 无法获取状态")
+                print("  Docker: 未运行或无法连接")
         except FileNotFoundError:
             print("  Docker: 未安装")
 
         # Check API
-        try:
-            req = urllib.request.Request(HEALTH_URL, method="GET")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                print(f"  EverCore API: 正常")
-        except urllib.error.URLError:
-            print("  EverCore API: 未运行")
+        ok, detail = check_health()
+        print(f"  EverCore API: {'正常' if ok else '未运行'}")
+        if not ok:
+            print(f"  原因: {detail}")
 
 
 # === config command ===
@@ -368,8 +449,90 @@ def cmd_config(args):
     print(f"API 地址: {API_BASE_URL}")
     print(f"Cloud Key: {'已配置' if API_KEY else '未配置'}")
 
-    repo_dir = os.path.join(SCRIPT_DIR, "..", "EverOS")
-    print(f"本地安装: {'是' if os.path.isdir(os.path.join(repo_dir, 'methods', 'EverCore')) else '否'}")
+    evercore_dir = find_evercore_dir()
+    print(f"本地安装: {'是' if evercore_dir else '否'}")
+    if evercore_dir:
+        print(f"EverCore 路径: {evercore_dir}")
+
+
+# === doctor command ===
+
+def report_check(ok, label, detail=None):
+    tag = "[OK]" if ok else "[FAIL]"
+    print(f"{tag} {label}")
+    if detail:
+        print(f"     {detail}")
+
+
+def cmd_doctor(args):
+    """Beginner-friendly environment diagnosis."""
+    print("=== EverOS Doctor ===\n")
+    suggestions = []
+
+    report_check(True, f"Python 可用: {sys.version.split()[0]}")
+
+    has_cloud = bool(API_KEY)
+    evercore_dir = find_evercore_dir()
+    has_local = evercore_dir is not None
+    mode = detect_mode()
+
+    report_check(has_cloud, "Cloud Key 已配置" if has_cloud else "Cloud Key 未配置")
+    if not has_cloud:
+        suggestions.append("如使用 Cloud，请设置 EVEROS_API_KEY 后重启终端。")
+
+    report_check(has_local, "本地 EverOS 已找到" if has_local else "本地 EverOS 未找到",
+                 evercore_dir if evercore_dir else None)
+
+    if shutil.which("uv"):
+        report_check(True, "uv 已安装")
+    else:
+        report_check(False, "uv 未安装")
+        if has_local:
+            suggestions.append("本地模式需要 uv，请运行 python -X utf8 scripts/auto_setup.py 或手动安装 uv。")
+
+    docker_installed = shutil.which("docker") is not None
+    report_check(docker_installed, "Docker 已安装" if docker_installed else "Docker 未安装")
+
+    docker_ok = False
+    if docker_installed:
+        docker_ok = is_docker_running()
+        report_check(docker_ok, "Docker 正在运行" if docker_ok else "Docker 未运行")
+        if has_local and not docker_ok:
+            suggestions.append("本地模式需要 Docker，运行 python -X utf8 scripts/everos.py start 会尝试启动 Docker Desktop。")
+
+    if has_local:
+        env_file = os.path.join(evercore_dir, ".env")
+        report_check(os.path.exists(env_file), ".env 已配置" if os.path.exists(env_file) else ".env 未配置")
+        if not os.path.exists(env_file):
+            suggestions.append("本地模式需要 .env。运行 python -X utf8 scripts/auto_setup.py 生成配置。")
+
+    api_ok, api_detail = check_health()
+    report_check(api_ok, "EverOS API 可访问" if api_ok else "EverOS API 未响应", api_detail if not api_ok else None)
+    if not api_ok:
+        if mode == "cloud":
+            suggestions.append("Cloud API 未响应，请检查 EVEROS_API_URL 和 EVEROS_API_KEY。")
+        elif has_local:
+            suggestions.append("本地 API 未响应，请运行 python -X utf8 scripts/everos.py start。")
+        else:
+            suggestions.append("未检测到可用配置，请先运行 python -X utf8 scripts/everos.py setup。")
+
+    global_claude_settings = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+    project_claude_settings = os.path.join(os.getcwd(), ".claude", "settings.json")
+    hook_count = count_claude_hooks(global_claude_settings) + count_claude_hooks(project_claude_settings)
+    report_check(hook_count >= 2, "Claude Code 自动记忆 hooks 已安装" if hook_count >= 2 else "Claude Code 自动记忆 hooks 未完整安装",
+                 f"检测到 {hook_count} 个 EverOS hook")
+    if hook_count < 2:
+        suggestions.append("如需 Claude Code 自动保存/检索记忆，请运行 python -X utf8 scripts/everos.py setup claude。")
+
+    print("\n建议：")
+    if suggestions:
+        for item in dict.fromkeys(suggestions):
+            print(f"  - {item}")
+    else:
+        print("  - 当前基础配置正常。")
+        print('  - 可以运行 python -X utf8 scripts/everos.py search "关键词" --method hybrid')
+
+    print_next_steps()
 
 
 # === test command ===
@@ -380,17 +543,69 @@ def cmd_test(args):
     subprocess.run([sys.executable, "-X", "utf8", test_script])
 
 
+# === setup command ===
+
+def cmd_setup(args):
+    """Guide beginner setup without hiding the next command."""
+    print("=== EverOS Setup ===\n")
+    print("推荐新手优先使用 Cloud；如果你需要数据完全本地，再选择 Local。")
+    print("\n[1] Claude Code: 安装 skill 并启用自动记忆 hooks")
+    print("[2] Cloud: 需要 EVEROS_API_KEY，无需 Docker")
+    print("[3] Local: 需要 Docker Desktop，会启动本地 EverCore")
+
+    choice = args.mode
+    if not choice:
+        choice = input("\n请选择 (claude/cloud/local): ").strip().lower()
+        if choice == "1":
+            choice = "claude"
+        elif choice == "2":
+            choice = "cloud"
+        elif choice == "3":
+            choice = "local"
+
+    if choice == "cloud":
+        print("\nCloud 模式需要先设置环境变量：")
+        print('  setx EVEROS_API_URL "https://api.evermind.ai"')
+        print('  setx EVEROS_API_KEY "your_api_key"')
+        print("\n设置后请重启终端，再运行：")
+        print("  python -X utf8 scripts/everos.py doctor")
+        return
+
+    if choice == "local":
+        auto_setup = os.path.join(SCRIPT_DIR, "auto_setup.py")
+        subprocess.run([sys.executable, "-X", "utf8", auto_setup])
+        print_next_steps()
+        return
+
+    if choice == "claude":
+        setup_script = os.path.join(SCRIPT_DIR, "setup_skill.py")
+        subprocess.run([sys.executable, "-X", "utf8", setup_script, "--global"])
+        print("\nClaude Code 安装/更新完成。请重启 Claude Code 后生效。")
+        print_next_steps()
+        return
+
+    if choice == "install":
+        cmd_install(args)
+        print("\nClaude Code 安装/更新完成。请重启 Claude Code 后生效。")
+        print_next_steps()
+        return
+
+    print("无效选择。请使用 claude、cloud 或 local。")
+    sys.exit(1)
+
+
 # === install command ===
 
 def cmd_install(args):
     """Install skill to Claude Code settings."""
     setup_script = os.path.join(SCRIPT_DIR, "setup_skill.py")
     cmd = [sys.executable, "-X", "utf8", setup_script]
-    if args.global_:
+    if getattr(args, "global_", False):
         cmd.append("--global")
-    elif args.project:
+    elif getattr(args, "project", False):
         cmd.append("--project")
     subprocess.run(cmd)
+    print_next_steps()
 
 
 def cmd_uninstall(args):
@@ -408,8 +623,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
+  everos doctor                   一键诊断并给出下一步建议
+  everos setup                    新手安装引导
   everos install                  安装 skill 到 Claude Code
   everos start                    启动本地环境
+  everos stop                     停止本地数据库
   everos test                     一键测试所有功能
   everos save --messages '[...]'  保存对话
   everos search "关键词"           搜索记忆
@@ -418,6 +636,11 @@ def main():
         """,
     )
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
+
+    # setup
+    setup_parser = subparsers.add_parser("setup", help="新手安装引导")
+    setup_parser.add_argument("mode", nargs="?", choices=["claude", "cloud", "local", "install"],
+                              help="安装方式")
 
     # install
     install_parser = subparsers.add_parser("install", help="安装 skill 到 Claude Code")
@@ -433,6 +656,9 @@ def main():
     # start
     subparsers.add_parser("start", help="启动本地环境")
 
+    # stop
+    subparsers.add_parser("stop", help="停止本地数据库")
+
     # save
     save_parser = subparsers.add_parser("save", help="保存对话到 EverOS")
     save_parser.add_argument("--messages", help="JSON 格式的对话内容")
@@ -443,7 +669,7 @@ def main():
     # search
     search_parser = subparsers.add_parser("search", help="搜索历史记忆")
     search_parser.add_argument("query", help="搜索关键词")
-    search_parser.add_argument("--method", default="keyword",
+    search_parser.add_argument("--method", default="hybrid",
                               choices=["keyword", "vector", "hybrid", "agentic"],
                               help="检索方式")
     search_parser.add_argument("--top-k", type=int, default=10, help="返回数量")
@@ -453,6 +679,9 @@ def main():
 
     # status
     subparsers.add_parser("status", help="检查服务状态")
+
+    # doctor
+    subparsers.add_parser("doctor", help="一键诊断并给出下一步建议")
 
     # config
     subparsers.add_parser("config", help="查看配置")
@@ -468,10 +697,13 @@ def main():
 
     commands = {
         "start": cmd_start,
+        "stop": cmd_stop,
         "save": cmd_save,
         "search": cmd_search,
         "status": cmd_status,
+        "doctor": cmd_doctor,
         "config": cmd_config,
+        "setup": cmd_setup,
         "install": cmd_install,
         "uninstall": cmd_uninstall,
         "test": cmd_test,

@@ -36,7 +36,7 @@ def flush_async(url, data):
     body = json.dumps(data, ensure_ascii=False)
     cmd = ["curl", "-s", "-X", "POST", url, "-H", "Content-Type: application/json", "-d", body]
     if HEADERS.get("Authorization"):
-        cmd.extend(["-H", HEADERS["Authorization"]])
+        cmd.extend(["-H", f"Authorization: {HEADERS['Authorization']}"])
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,

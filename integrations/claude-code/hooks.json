@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -X utf8 ${EVEROS_SKILL_DIR}/integrations/claude-code/inject_memory.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -X utf8 ${EVEROS_SKILL_DIR}/integrations/claude-code/store_memory.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -84,16 +84,17 @@ def configure_env(evercore_dir):
     llm_key = input("  LLM API Key (OpenRouter, or press Enter to skip): ").strip()
     embed_key = input("  Vectorize API Key (DeepInfra, or press Enter to skip): ").strip()
 
-    with open(template, "r") as f:
+    with open(template, "r", encoding="utf-8") as f:
         content = f.read()
 
     if llm_key:
         content = content.replace("OPENROUTER_API_KEY=your-openrouter-api-key", f"OPENROUTER_API_KEY={llm_key}")
-        content = content.replace("LLM_API_KEY=sk-or-v1-xxxx", f"LLM_API_KEY={llm_key}")
+        content = content.replace("LLM_API_KEY=your-llm-api-key", f"LLM_API_KEY={llm_key}")
+        content = content.replace("LLM_API_KEY=" + "sk-or-v1-" + "xxxx", f"LLM_API_KEY={llm_key}")
     if embed_key:
         content = content.replace("VECTORIZE_FALLBACK_API_KEY=xxxxx", f"VECTORIZE_FALLBACK_API_KEY={embed_key}")
 
-    with open(env_file, "w") as f:
+    with open(env_file, "w", encoding="utf-8") as f:
         f.write(content)
 
     print("[OK] .env configured")
@@ -110,8 +111,8 @@ def start_server(evercore_dir):
     proc = subprocess.Popen(
         ["uv", "run", "python", "src/run.py"],
         cwd=evercore_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     print(f"[OK] EverCore API starting (PID {proc.pid})")
     print("     Server will be at http://localhost:1995")
@@ -178,8 +179,10 @@ def main():
 
     print("\n=== Setup Complete ===")
     print("  API: http://localhost:1995")
-    print("  Probe: python scripts/probe.py --check-docker")
-    print("  Stop: docker compose -f EverOS/methods/EverCore/docker-compose.yaml down")
+    print("  Diagnose: python -X utf8 scripts/everos.py doctor")
+    print("  Start: python -X utf8 scripts/everos.py start")
+    print("  Status: python -X utf8 scripts/everos.py status")
+    print("  Stop: python -X utf8 scripts/everos.py stop")
 
 
 if __name__ == "__main__":
